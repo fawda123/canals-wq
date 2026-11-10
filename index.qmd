@@ -1,0 +1,20 @@
+---
+title: "Residential canals and IWR water quality stations"
+format:
+  html:
+    page-layout: full
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+Residential canal polygons are colored by mean distance. Orange points are FDEP Impaired Waters Rule (IWR) Run 68 stations that fall inside a canal polygon. Click a station to see its period of record and a summary of each water quality parameter. Click a canal to see its attributes. Use the control in the top right to turn either layer on or off.
+
+```{r}
+source('plot_rescanal_leaflet.R')
+m$width <- '100%'
+m$height <- '80vh'
+m
+```

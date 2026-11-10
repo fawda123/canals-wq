@@ -1,1 +1,4 @@
 data/Stations_Run68/IWR_stations_Run68.dbf
+
+/.quarto/
+**/*.quarto_ipynb
