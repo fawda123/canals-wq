@@ -356,6 +356,7 @@ mg <- mg |>
     group = 'Canal centers'
   ) |>
   addLayersControl(
+    baseGroups = c('Esri gray', 'Esri imagery'),
     overlayGroups = c('Canals', 'Canal centers', 'IWR stations'),
     options = layersControlOptions(collapsed = FALSE)
   ) |>

@@ -104,8 +104,12 @@ canalmap <- function(canals, stations, wq, colvar = 'DIST_MEAN', pal = NULL,
   if (!is.null(popextra))
     pop <- paste0(pop, popextra)
 
+  # base maps for the layers control. The first one added is shown by default.
+  basemaps <- c('Esri gray', 'Esri imagery')
+
   leaflet() |>
-    addProviderTiles(providers$Esri.WorldGrayCanvas) |>
+    addProviderTiles(providers$Esri.WorldGrayCanvas, group = 'Esri gray') |>
+    addProviderTiles(providers$Esri.WorldImagery, group = 'Esri imagery') |>
     addPolygons(
       data = canals,
       fillColor = ~pal(fillval),
@@ -137,6 +141,7 @@ canalmap <- function(canals, stations, wq, colvar = 'DIST_MEAN', pal = NULL,
       position = 'bottomright'
     ) |>
     addLayersControl(
+      baseGroups = basemaps,
       overlayGroups = c('Canals', 'IWR stations'),
       options = layersControlOptions(collapsed = FALSE)
     )
