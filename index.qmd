@@ -10,6 +10,8 @@ execute:
   message: false
 ---
 
+## Map
+
 Residential canal polygons are colored by mean distance. Orange points are FDEP Impaired Waters Rule (IWR) Run 68 stations that fall inside a canal polygon. Click a station to see its period of record and a summary of each water quality parameter. Click a canal to see its attributes. Use the control in the top right to turn either layer on or off.
 
 ```{r}
@@ -17,4 +19,135 @@ source('plot_rescanal_leaflet.R')
 m$width <- '100%'
 m$height <- '80vh'
 m
+```
+
+## Water quality summary
+
+```{r}
+library(reactable)
+library(plotly)
+
+# canal results with the canal ID for each station
+canalwq <- canaliwr |>
+  inner_join(sf::st_drop_geometry(canalsta)[, c('sta', 'CHAWQ_ID')], by = 'sta')
+
+# summary of all results for each parameter
+wqsum <- canalwq |>
+  group_by(masterCode, units) |>
+  summarise(
+    nobs = n(),
+    nsta = n_distinct(sta),
+    ncanal = n_distinct(CHAWQ_ID),
+    yrmin = min(year),
+    yrmax = max(year),
+    min = min(result, na.rm = TRUE),
+    max = max(result, na.rm = TRUE),
+    mean = mean(result, na.rm = TRUE),
+    median = median(result, na.rm = TRUE),
+    sd = sd(result, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# inline svg histogram of log10 values above zero for the table
+sparkhist <- function(x, nbin = 30, w = 140, h = 28, col = '#3b6fb6') {
+  x <- log10(x[x > 0])
+  brks <- seq(min(x), max(x), length.out = nbin + 1)
+  cnt <- hist(x, breaks = brks, plot = FALSE)$counts
+  bw <- w / nbin
+  bh <- h * cnt / max(cnt)
+  # hover text with the bin range in original units and the count
+  lab <- paste0(
+    formatC(10^brks[-length(brks)], digits = 2, format = 'fg'), ' to ',
+    formatC(10^brks[-1], digits = 2, format = 'fg'), ': ', cnt
+  )
+  # full-height transparent rect under each bar so hovering is easy
+  bars <- paste0(
+    '<g><title>', lab, '</title>',
+    '<rect x="', round((seq_len(nbin) - 1) * bw, 2), '" y="0" width="', round(bw, 2),
+    '" height="', h, '" fill="transparent"/>',
+    '<rect x="', round((seq_len(nbin) - 1) * bw, 2), '" y="', round(h - bh, 2),
+    '" width="', round(bw - 0.5, 2), '" height="', round(bh, 2), '" fill="', col, '"/></g>',
+    collapse = ''
+  )
+  paste0('<svg width="', w, '" height="', h, '" role="img" aria-label="histogram">', bars, '</svg>')
+}
+
+hists <- canalwq |>
+  group_by(masterCode) |>
+  summarise(hist = sparkhist(result))
+
+wqsum <- left_join(wqsum, hists, by = 'masterCode')
+```
+
+The table summarizes every result from the `r format(length(unique(canalwq$sta)), big.mark = ',')` IWR stations that fall inside `r format(length(unique(canalwq$CHAWQ_ID)), big.mark = ',')` canal polygons, across all years in the database. Statistics are calculated on the results as reported, so they include values with IWR qualifier codes (for example, `U` for below detection) and a few extreme values that may be errors. The distribution column is a histogram of the results on a log10 scale, so it shows the shape of the data rather than its absolute range. Zeros are left out of the histograms because they can't be log-transformed. Hover over a histogram bar to see its range and count. Click a column header to sort.
+
+```{r}
+fmt <- function(value) formatC(value, digits = 3, format = 'fg', big.mark = ',')
+
+reactable(
+  wqsum,
+  pagination = FALSE,
+  highlight = TRUE,
+  compact = TRUE,
+  defaultColDef = colDef(minWidth = 70),
+  columns = list(
+    masterCode = colDef(name = 'Parameter', minWidth = 90),
+    units = colDef(name = 'Units', minWidth = 95),
+    nobs = colDef(name = 'Results', format = colFormat(separators = TRUE)),
+    nsta = colDef(name = 'Stations', format = colFormat(separators = TRUE)),
+    ncanal = colDef(name = 'Canals', format = colFormat(separators = TRUE)),
+    yrmin = colDef(name = 'First year'),
+    yrmax = colDef(name = 'Last year'),
+    min = colDef(name = 'Min', cell = fmt),
+    max = colDef(name = 'Max', cell = fmt),
+    mean = colDef(name = 'Mean', cell = fmt),
+    median = colDef(name = 'Median', cell = fmt),
+    sd = colDef(name = 'SD', cell = fmt),
+    hist = colDef(name = 'Distribution (log10)', html = TRUE, sortable = FALSE, minWidth = 160)
+  )
+)
+```
+
+### Canal medians
+
+Each point below is the median of all results in one canal polygon. Using one value per canal keeps heavily sampled canals from dominating the picture. The boxes show the spread across canals. The y-axes use a log scale, and canals with a median of zero are left out. Hover over a point to see the canal ID, waterbody, county and number of results.
+
+```{r}
+#| fig-height: 11
+# median of all results in each canal, with canal attributes for hover text
+canalmed <- canalwq |>
+  group_by(masterCode, units, CHAWQ_ID) |>
+  summarise(med = median(result, na.rm = TRUE), n = n(), .groups = 'drop') |>
+  left_join(
+    sf::st_drop_geometry(canals)[, c('CHAWQ_ID', 'WATERBODY_', 'County')],
+    by = 'CHAWQ_ID'
+  ) |>
+  filter(med > 0) |>
+  mutate(
+    txt = paste0(
+      'Canal ID: ', CHAWQ_ID, '<br>',
+      'Waterbody: ', WATERBODY_, '<br>',
+      'County: ', County, '<br>',
+      'Median: ', formatC(med, digits = 3, format = 'fg'), ' ', units, '<br>',
+      'Results: ', n
+    )
+  )
+
+# one panel per parameter, each with its own log y-axis
+pars <- sort(unique(canalmed$masterCode))
+pnls <- lapply(pars, function(p) {
+  dat <- canalmed[canalmed$masterCode == p, ]
+  plot_ly(dat, y = ~med, x = p, type = 'box', boxpoints = 'all', jitter = 0.5,
+          pointpos = 0, text = ~txt, hoverinfo = 'text', hoveron = 'points',
+          marker = list(size = 5, color = '#3b6fb6', opacity = 0.5),
+          line = list(color = '#333333', width = 1.5),
+          fillcolor = 'rgba(0,0,0,0)', showlegend = FALSE) |>
+    layout(
+      yaxis = list(type = 'log', title = dat$units[1], dtick = 1, tickformat = '~g'),
+      xaxis = list(tickfont = list(size = 13))
+    )
+})
+
+subplot(pnls, nrows = 3, titleY = TRUE, margin = c(0.03, 0.03, 0.05, 0.05)) |>
+  config(displaylogo = FALSE)
 ```
