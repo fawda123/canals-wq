@@ -16,6 +16,14 @@ pth <- tools::file_path_sans_ext(zippth)
 if(length(list.files(pth, pattern = 'rawDataDB.*\\.accdb$', recursive = TRUE)) == 0)
   unzip(zippth, exdir = pth)
 
+# main run database with the parameter lookup tables, unzip it if missing
+if(length(list.files(pth, pattern = '^iwr.*\\.accdb$', recursive = TRUE)) == 0){
+  mainfl <- grep('^iwr.*\\.accdb$', basename(unzip(zippth, list = TRUE)$Name), value = TRUE)
+  unzip(zippth, files = mainfl, exdir = pth)
+}
+maindb <- list.files(pth, pattern = '^iwr.*\\.accdb$', full.names = TRUE, recursive = TRUE)
+stopifnot(length(maindb) == 1)
+
 # .accdb files to query, recursive in case the zip has a nested folder
 dbs <- list.files(pth, pattern = 'rawDataDB.*\\.accdb$', full.names = TRUE, recursive = TRUE)
 stopifnot(length(dbs) > 0)
@@ -28,7 +36,7 @@ mcode <- c("CHLAC","COLOR","COND","DO","DOSAT","NO3O2","ORGN","SALIN","TKN","TN"
 # query builder, table name in each .accdb matches the file name
 qry_fun <- function(tab){
 
-  out <- paste0("select sta, year, month, day, masterCode, result, rCode from ", tab,
+  out <- paste0("select sta, year, month, day, time, depth, dUnits, masterCode, param, result, rCode from ", tab,
                 " where ", mcode)
   return(out)
 
@@ -56,6 +64,46 @@ for(i in seq_along(dbs)){
 
 }
 iwr <- bind_rows(iwr)
+
+# units for each master parameter code, from the main run database
+# param is the STORET code for each result, IWR maps source units to these codes
+con <- odbcConnectAccess2007(maindb)
+units <- sqlFetch(con, 'Master parameter codes', stringsAsFactors = FALSE) %>%
+  select(masterCode = `Master parameter Code`, units = Units) %>%
+  mutate(units = enc2utf8(units)) %>%
+  filter(masterCode %in% unique(iwr$masterCode))
+odbcClose(con)
+stopifnot(!any(duplicated(units$masterCode)))
+
+iwr <- left_join(iwr, units, by = 'masterCode')
+
+# depth in meters, dUnits is the unit for depth
+# f is assumed to be feet, other codes such as 64 are set to NA
+iwr <- iwr %>%
+  mutate(
+    depth_m = case_when(
+      dUnits == 'm' ~ depth,
+      dUnits %in% c('ft', 'f') ~ depth * 0.3048,
+      dUnits == 'in' ~ depth * 0.0254,
+      TRUE ~ NA_real_
+    )
+  )
+
+# depth units and how many results have a depth
+print(count(iwr, dUnits, hasdepth = !is.na(depth)))
+
+# check that values are comparable across STORET codes within each parameter
+unitchk <- iwr %>%
+  group_by(masterCode, units, param) %>%
+  summarise(
+    n = n(),
+    p10 = quantile(result, 0.1, na.rm = TRUE),
+    med = median(result, na.rm = TRUE),
+    p90 = quantile(result, 0.9, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(masterCode, desc(n))
+print(as.data.frame(unitchk))
 
 # station locations and wbids, extracted from Stations_Run68.zip
 # the shapefile repeats some stations as exact duplicates, so keep distinct rows

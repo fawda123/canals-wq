@@ -30,7 +30,7 @@ canaliwr <- iwr |>
 # one row per station and parameter, ordered so the latest result is last
 parsta <- canaliwr |>
   arrange(sta, masterCode, date) |>
-  group_by(sta, masterCode) |>
+  group_by(sta, masterCode, units) |>
   summarise(
     n = n(),
     datemin = min(date, na.rm = TRUE),
@@ -47,7 +47,7 @@ fmt <- function(x) formatC(x, digits = 3, format = 'g')
 partab <- parsta |>
   mutate(
     row = paste0(
-      '<tr><td>', masterCode, '</td><td>', n, '</td><td>',
+      '<tr><td>', masterCode, '</td><td>', units, '</td><td>', n, '</td><td>',
       format(datemin, '%Y-%m-%d'), ' to ', format(datemax, '%Y-%m-%d'), '</td><td>',
       fmt(min), '</td><td>', fmt(med), '</td><td>', fmt(max), '</td><td>', fmt(last), '</td></tr>'
     )
@@ -78,7 +78,7 @@ stapts <- canalsta |>
       '<b>Dates:</b> ', format(datemin, '%Y-%m-%d'), ' to ', format(datemax, '%Y-%m-%d'), '<br>',
       '<b>Samples:</b> ', nobs, '<br><br>',
       '<table style="font-size:11px; border-collapse:collapse;" border="1" cellpadding="2">',
-      '<tr><th>Parameter</th><th>n</th><th>Dates</th><th>Min</th><th>Median</th><th>Max</th><th>Last</th></tr>',
+      '<tr><th>Parameter</th><th>Units</th><th>n</th><th>Dates</th><th>Min</th><th>Median</th><th>Max</th><th>Last</th></tr>',
       tab, '</table>'
     )
   )
