@@ -4,42 +4,84 @@ format:
   html:
     page-layout: full
     embed-resources: true
+    toc: true
 execute:
   echo: false
   warning: false
   message: false
 ---
 
+```{r}
+#| include: false
+library(sf)
+library(dplyr)
+library(reactable)
+library(plotly)
+library(knitr)
+
+# multivariate analysis, which also sets the data subset used on this page
+source('cluster_canal_wq.R')
+
+# canalmap() for the leaflet maps
+source('plot_rescanal_leaflet.R')
+
+# canals in the analysis, with their group
+ids <- canalclust$CHAWQ_ID
+canalpoly <- st_read(
+  'data/ResCanal_Polygons_10212026_WMDs_with_DistZonalStats.shp',
+  quiet = TRUE
+) |>
+  st_make_valid() |>
+  filter(CHAWQ_ID %in% ids) |>
+  left_join(canalclust[, c('CHAWQ_ID', 'grp')], by = 'CHAWQ_ID')
+
+# results and stations in those canals
+wqsub <- canalwq |>
+  filter(CHAWQ_ID %in% ids)
+stasub <- canalsta |>
+  filter(sta %in% wqsub$sta)
+
+# helpers for inline text
+cnum <- function(x) format(x, big.mark = ',')
+ng <- function(g) sum(canalclust$grp == g)
+gmed <- function(v, g) trimws(formatC(grpprof[[v]][grpprof$grp == g], digits = 2, format = 'fg', big.mark = ','))
+ct <- function(v, val, g) sum(canalclust[[v]] == val & canalclust$grp == g, na.rm = TRUE)
+tot <- function(v, val) sum(canalclust[[v]] == val, na.rm = TRUE)
+```
+
+## Data used
+
+This page describes the water quality of residential canals that have FDEP Impaired Waters Rule (IWR) Run 68 stations inside them. Everything below uses the same subset of data as the multivariate analysis at the end of the page:
+
+- **Canals** that drain to lakes, reservoirs, rivers or creeks (`TYP_RECWAT` of `r paste(dropwat, collapse = ' or ')`) are left out, to focus on estuarine and marine canals.
+- **Results** are from `r yrmin` onward, so they describe current conditions.
+- **Parameters** are limited to the five used in the analysis: salinity, dissolved oxygen, total nitrogen, total phosphorus and chlorophyll-a.
+- **Only canals with all five parameters** are kept.
+
+That leaves `r cnum(nrow(wqsub))` results from `r cnum(length(unique(wqsub$sta)))` stations in `r length(ids)` canals.
+
 ## Map
 
-Residential canal polygons are colored by mean distance. Orange points are FDEP Impaired Waters Rule (IWR) Run 68 stations that fall inside a canal polygon. Click a station to see its period of record and a summary of each water quality parameter. Click a canal to see its attributes. Use the control in the top right to turn either layer on or off.
+Canal polygons are colored by mean distance. Orange points are the IWR stations inside them. Click a station to see its period of record and a summary of each parameter. Click a canal to see its attributes. Use the control in the top right to turn either layer on or off.
 
 ```{r}
-source('plot_rescanal_leaflet.R')
+m <- canalmap(canalpoly, stasub, wqsub)
 m$width <- '100%'
-m$height <- '80vh'
+m$height <- '70vh'
 m
 ```
 
 ## Water quality summary
 
 ```{r}
-library(reactable)
-library(plotly)
-
-# canal results with the canal ID for each station
-canalwq <- canaliwr |>
-  inner_join(sf::st_drop_geometry(canalsta)[, c('sta', 'CHAWQ_ID')], by = 'sta')
-
 # summary of all results for each parameter
-wqsum <- canalwq |>
+wqsum <- wqsub |>
   group_by(masterCode, units) |>
   summarise(
     nobs = n(),
     nsta = n_distinct(sta),
     ncanal = n_distinct(CHAWQ_ID),
-    yrmin = min(year),
-    yrmax = max(year),
+    yrs = paste0(min(year), '-', max(year)),
     min = min(result, na.rm = TRUE),
     max = max(result, na.rm = TRUE),
     mean = mean(result, na.rm = TRUE),
@@ -49,7 +91,7 @@ wqsum <- canalwq |>
   )
 
 # inline svg histogram of log10 values above zero for the table
-sparkhist <- function(x, nbin = 30, w = 140, h = 28, col = '#3b6fb6') {
+sparkhist <- function(x, nbin = 30, w = 110, h = 28, col = '#3b6fb6') {
   x <- log10(x[x > 0])
   brks <- seq(min(x), max(x), length.out = nbin + 1)
   cnt <- hist(x, breaks = brks, plot = FALSE)$counts
@@ -72,14 +114,14 @@ sparkhist <- function(x, nbin = 30, w = 140, h = 28, col = '#3b6fb6') {
   paste0('<svg width="', w, '" height="', h, '" role="img" aria-label="histogram">', bars, '</svg>')
 }
 
-hists <- canalwq |>
+hists <- wqsub |>
   group_by(masterCode) |>
   summarise(hist = sparkhist(result))
 
 wqsum <- left_join(wqsum, hists, by = 'masterCode')
 ```
 
-The table summarizes every result from the `r format(length(unique(canalwq$sta)), big.mark = ',')` IWR stations that fall inside `r format(length(unique(canalwq$CHAWQ_ID)), big.mark = ',')` canal polygons, across all years in the database. Statistics are calculated on the results as reported, so they include values with IWR qualifier codes (for example, `U` for below detection) and a few extreme values that may be errors. The distribution column is a histogram of the results on a log10 scale, so it shows the shape of the data rather than its absolute range. Zeros are left out of the histograms because they can't be log-transformed. Hover over a histogram bar to see its range and count. Click a column header to sort.
+The table summarizes every result in the subset. Statistics are calculated on the results as reported, so they include values with IWR qualifier codes (for example, `U` for below detection) and a few extreme values that may be errors. The distribution column is a histogram of the results on a log10 scale, so it shows the shape of the data rather than its absolute range. Zeros are left out of the histograms because they can't be log-transformed. Hover over a histogram bar to see its range and count. Click a column header to sort.
 
 ```{r}
 fmt <- function(value) formatC(value, digits = 3, format = 'fg', big.mark = ',')
@@ -89,37 +131,38 @@ reactable(
   pagination = FALSE,
   highlight = TRUE,
   compact = TRUE,
-  defaultColDef = colDef(minWidth = 70),
+  style = list(fontSize = '0.85rem'),
+  defaultColDef = colDef(minWidth = 60, headerStyle = list(whiteSpace = 'nowrap')),
   columns = list(
-    masterCode = colDef(name = 'Parameter', minWidth = 90),
-    units = colDef(name = 'Units', minWidth = 95),
+    masterCode = colDef(name = 'Parameter', minWidth = 85),
+    units = colDef(name = 'Units', minWidth = 65),
     nobs = colDef(name = 'Results', format = colFormat(separators = TRUE)),
     nsta = colDef(name = 'Stations', format = colFormat(separators = TRUE)),
     ncanal = colDef(name = 'Canals', format = colFormat(separators = TRUE)),
-    yrmin = colDef(name = 'First year'),
-    yrmax = colDef(name = 'Last year'),
+    yrs = colDef(name = 'Years', minWidth = 90),
     min = colDef(name = 'Min', cell = fmt),
     max = colDef(name = 'Max', cell = fmt),
     mean = colDef(name = 'Mean', cell = fmt),
     median = colDef(name = 'Median', cell = fmt),
     sd = colDef(name = 'SD', cell = fmt),
-    hist = colDef(name = 'Distribution (log10)', html = TRUE, sortable = FALSE, minWidth = 160)
+    hist = colDef(name = 'Distribution (log10)', html = TRUE, sortable = FALSE, minWidth = 120,
+                  headerStyle = list(whiteSpace = 'normal'))
   )
 )
 ```
 
 ### Canal medians
 
-Each point below is the median of all results in one canal polygon. Using one value per canal keeps heavily sampled canals from dominating the picture. The boxes show the spread across canals. The y-axes use a log scale, and canals with a median of zero are left out. Hover over a point to see the canal ID, waterbody, county and number of results.
+Each point below is the median of all results in one canal polygon. Using one value per canal keeps heavily sampled canals from dominating the picture. These canal medians are the values used in the multivariate analysis. The boxes show the spread across canals. The y-axes use a log scale, and canals with a median of zero are left out. Hover over a point to see the canal ID, waterbody, county and number of results.
 
 ```{r}
-#| fig-height: 11
+#| fig-height: 5
 # median of all results in each canal, with canal attributes for hover text
-canalmed <- canalwq |>
+canalmedlong <- wqsub |>
   group_by(masterCode, units, CHAWQ_ID) |>
   summarise(med = median(result, na.rm = TRUE), n = n(), .groups = 'drop') |>
   left_join(
-    sf::st_drop_geometry(canals)[, c('CHAWQ_ID', 'WATERBODY_', 'County')],
+    st_drop_geometry(canalpoly)[, c('CHAWQ_ID', 'WATERBODY_', 'County')],
     by = 'CHAWQ_ID'
   ) |>
   filter(med > 0) |>
@@ -134,9 +177,8 @@ canalmed <- canalwq |>
   )
 
 # one panel per parameter, each with its own log y-axis
-pars <- sort(unique(canalmed$masterCode))
-pnls <- lapply(pars, function(p) {
-  dat <- canalmed[canalmed$masterCode == p, ]
+pnls <- lapply(wqvars, function(p) {
+  dat <- canalmedlong[canalmedlong$masterCode == p, ]
   plot_ly(dat, y = ~med, x = p, type = 'box', boxpoints = 'all', jitter = 0.5,
           pointpos = 0, text = ~txt, hoverinfo = 'text', hoveron = 'points',
           marker = list(size = 5, color = '#3b6fb6', opacity = 0.5),
@@ -148,6 +190,184 @@ pnls <- lapply(pars, function(p) {
     )
 })
 
-subplot(pnls, nrows = 3, titleY = TRUE, margin = c(0.03, 0.03, 0.05, 0.05)) |>
+subplot(pnls, nrows = 1, titleY = TRUE, margin = 0.03) |>
   config(displaylogo = FALSE)
 ```
+
+## Multivariate analysis
+
+### Methods
+
+The analysis groups canals by their water quality and their size and shape. Each canal is described by seven values:
+
+- the medians of its salinity, dissolved oxygen (DO), total nitrogen (TN), total phosphorus (TP) and chlorophyll-a (CHLAC) results
+- its area in acres (`area_acres`)
+- its mean distance (`DIST_MEAN`) from the canal shapefile, assumed to be in meters
+
+TN, TP, chlorophyll-a, area and distance are right skewed, so they are log10 transformed. All seven values are then scaled to a mean of 0 and a standard deviation of 1, so each one carries the same weight. Canals are grouped with Ward's hierarchical clustering on Euclidean distances. The number of groups is the one with the highest average silhouette width, testing 2 to `r kmax` groups. Groups are numbered from lowest to highest median salinity. The analysis is in `cluster_canal_wq.R`, and its settings are at the top of that script.
+
+### Number of groups
+
+```{r}
+#| fig-height: 3
+#| fig-width: 6
+p1
+```
+
+Silhouette width measures how well each canal fits its own group compared with the next closest group. `r k` groups had the highest average width, at `r round(max(silk$silwidth), 2)`. Values from 0.25 to 0.5 are usually read as weak structure. The canals form more of a continuum than separate types, so the groups are best treated as broad patterns. The groups also shifted when the start year changed during testing, which is another sign that the structure is weak.
+
+### Group profiles
+
+```{r}
+# median of the canal values in each group, in original units
+prof <- grpprof |>
+  mutate(across(all_of(vars), \(x) formatC(x, digits = 3, format = 'fg', big.mark = ',')))
+kable(
+  prof,
+  col.names = c('Group', 'Canals', 'Salinity (ppt)', 'DO (mg/L)', 'TN (mg/L)',
+                'TP (mg/L)', 'Chl-a (µg/L)', 'Area (acres)', 'Mean distance (m)'),
+  align = 'r'
+)
+```
+
+The table gives the median of the canal values in each group.
+
+- **Group 1: fresh to brackish and enriched (`r ng(1)` canals).** These canals have the lowest salinity (median `r gmed('SALIN', 1)` ppt). They have the highest nutrients (TN `r gmed('TN', 1)` mg/L, TP `r gmed('TP', 1)` mg/L) and chlorophyll-a (`r gmed('CHLAC', 1)` µg/L), and the lowest DO (`r gmed('DO', 1)` mg/L). They are mid-sized, with a median area of `r gmed('area_acres', 1)` acres.
+- **Group 2: large brackish systems (`r ng(2)` canals).** These canals stand out by size. Their median area is `r gmed('area_acres', 2)` acres and their median distance is `r gmed('DIST_MEAN', 2)` m, both far larger than the other groups. Salinity is in between (median `r gmed('SALIN', 2)` ppt). Nutrients are low, and chlorophyll-a is the lowest of the three groups (median `r gmed('CHLAC', 2)` µg/L).
+- **Group 3: small marine canals (`r ng(3)` canals).** These canals have the highest salinity (median `r gmed('SALIN', 3)` ppt) and are the smallest (median `r gmed('area_acres', 3)` acres, `r gmed('DIST_MEAN', 3)` m distance). Nutrients are low to moderate (TN `r gmed('TN', 3)` mg/L, TP `r gmed('TP', 3)` mg/L).
+
+### Ordination
+
+```{r}
+#| fig-height: 7
+#| fig-width: 9
+p2
+```
+
+The plot shows the canals on the first two axes of a principal components analysis (PCA) of the same seven scaled values. The arrows show how each value loads on the axes. The first axis (`r pcvar[1]`% of the variance) runs from salinity to nutrients and chlorophyll-a, and it separates group 1 from group 3. The second axis (`r pcvar[2]`%) is driven by area and distance, and it separates group 2 from the others. DO has little weight on either axis and mostly makes up the third axis (`r pcvar[3]`%). Distance is also linked to salinity, since canals with longer distances tend to be fresher.
+
+### Values by group
+
+```{r}
+#| fig-height: 7
+#| fig-width: 10
+p3
+```
+
+### Canal attributes by group
+
+None of the canal attributes below were used to form the groups, but several of them line up with the groups. Each table gives the number of canals and the percentage of each group's canals.
+
+```{r}
+# counts with the percentage of each group's canals
+xtab <- function(v) {
+  x <- canalclust[[v]]
+  if (v == 'TYP_SCALE')
+    x <- factor(x, levels = c('Small', 'Moderate', 'Large', 'Very Large/Mega'))
+  tab <- table(x, canalclust$grp)
+  pct <- round(100 * prop.table(tab, 2))
+  out <- matrix(paste0(tab, ' (', pct, '%)'), nrow = nrow(tab), dimnames = dimnames(tab))
+  out <- cbind(out, Total = rowSums(tab))
+  colnames(out)[1:k] <- paste('Group', 1:k)
+  kable(out, align = 'r')
+}
+```
+
+**Canal form (`TYP_FORM`).** Finger canals make up `r ct('TYP_FORM', 'Finger', 1)` of the `r ng(1)` canals in group 1 and `r ct('TYP_FORM', 'Finger', 2)` of the `r ng(2)` in group 2. Group 3 holds `r ct('TYP_FORM', 'Open basin', 3)` of the `r tot('TYP_FORM', 'Open basin')` open-basin canals and most of the single-channel canals.
+
+```{r}
+xtab('TYP_FORM')
+```
+
+**Connection (`TYP_CONNEC`).** Group 3 holds `r ct('TYP_CONNEC', 'Dead-End', 3)` of the `r tot('TYP_CONNEC', 'Dead-End')` dead-end canals. Group 1 is mostly single-mouth canals (`r ct('TYP_CONNEC', 'Single-Mouth', 1)` of `r ng(1)`). Group 2 has the highest share of through-flow or multi-mouth canals (`r ct('TYP_CONNEC', 'Through-Flow/Multi-Mouth', 2)` of `r ng(2)`), which fits with its large, connected systems. So the small, marine group 3 canals tend to be dead-end basins that open straight onto salty water. The fresher, enriched group 1 canals are finger canals with a single mouth.
+
+```{r}
+xtab('TYP_CONNEC')
+```
+
+**Scale (`TYP_SCALE`).** Scale lines up most clearly with group 2. `r ct('TYP_SCALE', 'Very Large/Mega', 2)` of its `r ng(2)` canals are "Very Large/Mega", which matches its large area and distance. Group 3 is mostly "Moderate" and "Large", and group 1 is a mix.
+
+```{r}
+xtab('TYP_SCALE')
+```
+
+**Receiving water (`TYP_RECWAT`).** Most canals in every group drain to a bay or estuary. Group 3 has none of the `r tot('TYP_RECWAT', 'Managed Canal/Waterway')` canals that drain to a managed canal or waterway. Those canals fall in groups 1 (`r ct('TYP_RECWAT', 'Managed Canal/Waterway', 1)`) and 2 (`r ct('TYP_RECWAT', 'Managed Canal/Waterway', 2)`), which helps explain their lower salinity.
+
+```{r}
+xtab('TYP_RECWAT')
+```
+
+**Location (`WMDNAME` and `County`).** The groups are strongly tied to geography. Group 3 is mostly Southwest Florida WMD canals (`r ct('WMDNAME', 'SWFWMD', 3)` of `r ng(3)`), and `r ct('County', 'Pinellas', 3)` of them are in Pinellas County alone. Groups 1 and 2 are mostly South Florida WMD canals, with many in Lee County. This means the groups partly reflect where monitoring happens. Pinellas County canals are well sampled, so they make up a large share of the canals in the analysis. Some of the differences between groups may be regional differences rather than effects of canal design.
+
+```{r}
+xtab('WMDNAME')
+```
+
+```{r}
+xtab('County')
+```
+
+### Map of groups
+
+Canals are colored by group. Canal polygons are too small to see at the statewide view, so each canal also has a point at its center in its group's color. Zoom in to see the polygons. Click a canal or its point to see its group, its attributes and the values used in the analysis. The IWR stations are hidden at first, and the layer control in the top right turns them on.
+
+```{r}
+grppal <- colorFactor(cols, levels = levels(canalclust$grp))
+
+# group and analysis values for each canal popup, in polygon order
+cv <- canalclust[match(canalpoly$CHAWQ_ID, canalclust$CHAWQ_ID), ]
+f3 <- function(x) formatC(x, digits = 3, format = 'fg')
+popextra <- paste0(
+  '<br><b>Group:</b> ', cv$grp, '<br>',
+  '<b>Median salinity:</b> ', f3(cv$SALIN), ' ppt<br>',
+  '<b>Median DO:</b> ', f3(cv$DO), ' mg/L<br>',
+  '<b>Median TN:</b> ', f3(cv$TN), ' mg/L<br>',
+  '<b>Median TP:</b> ', f3(cv$TP), ' mg/L<br>',
+  '<b>Median chl-a:</b> ', f3(cv$CHLAC), ' µg/L'
+)
+
+mg <- canalmap(canalpoly, stasub, wqsub, colvar = 'grp', pal = grppal,
+               legtitle = 'Group', popextra = popextra)
+# points at canal centers in group colors, with the same popups
+ctrs <- canalpoly |>
+  st_point_on_surface() |>
+  st_transform(crs = 4326)
+ctrpop <- paste0(
+  '<b>Canal ID:</b> ', ctrs$CHAWQ_ID, '<br>',
+  '<b>Waterbody:</b> ', ctrs$WATERBODY_, '<br>',
+  '<b>County:</b> ', ctrs$County, '<br>',
+  '<b>Form:</b> ', ctrs$TYP_FORM, '<br>',
+  '<b>Connection:</b> ', ctrs$TYP_CONNEC, '<br>',
+  '<b>Scale:</b> ', ctrs$TYP_SCALE, '<br>',
+  '<b>Area (acres):</b> ', round(ctrs$area_acres, 2), '<br>',
+  '<b>Mean distance:</b> ', round(ctrs$DIST_MEAN, 1), '<br>',
+  popextra
+)
+mg <- mg |>
+  addCircleMarkers(
+    data = ctrs,
+    radius = 5,
+    color = 'white',
+    weight = 1,
+    fillColor = ~grppal(grp),
+    fillOpacity = 1,
+    popup = ctrpop,
+    label = ~paste0('Group ', grp, ': ', WATERBODY_),
+    group = 'Canal centers'
+  ) |>
+  addLayersControl(
+    overlayGroups = c('Canals', 'Canal centers', 'IWR stations'),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  hideGroup('IWR stations')
+mg$width <- '100%'
+mg$height <- '70vh'
+mg
+```
+
+### Caveats
+
+- **The narrative reflects the current settings.** It describes the groups from data since `r yrmin`, with `r k` groups. The numbers in the text update when the page is re-rendered. If the settings change, the descriptions of the groups need to be checked.
+- **Results are pooled across years and seasons.** Each canal median combines all results since `r yrmin`. Canals sampled in different seasons or years may not be directly comparable.
+- **Distance units are assumed.** The shapefile doesn't say what `DIST_MEAN` measures or what its units are. It is assumed to be in meters because the source projection is in meters.
+- **Qualifier codes are not filtered.** Results with IWR qualifier codes are included as reported.
